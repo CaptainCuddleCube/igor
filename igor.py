@@ -5,7 +5,7 @@ from typing import List, Dict
 # A simple slack bot that allows a user easy access to start, stop, reboot and check the status of
 # an instance. The slack bot works by asking is simple questions. There are 5 stats currently:
 # get-instances, reboot, start, state, stop.
-# /igor get-instances
+# /igor list-instances
 #   - This will return a list of the instances, and their dns names
 # /igor reboot <instance-name> <options:dry-run>
 #   - This will reboot an instance by providing its name
@@ -26,15 +26,6 @@ from typing import List, Dict
 # print(list_instances(INSTANCES["token1"]))
 
 
-# The grouping of instances that can be controlled
-INSTANCES = {"instance": [{"id": "i-0aa3dde55b34a0fbd", "name": "test-instance"}]}
-
-# The users or channels that can access things.
-AUTHORIZED_USERS = {"channel1": INSTANCES["instance"]}
-
-TOKEN = "test-token"
-
-
 def error_handler(func):
     def wrapper(*args, **kwargs):
         try:
@@ -51,94 +42,128 @@ def error_handler(func):
     return wrapper
 
 
-def format_state_change(prev: str, curr: str) -> str:
-    if prev == curr:
-        return f"Instance state has not changed from: {curr}"
-    else:
-        return f"Changing instande state: {prev} --> {curr}"
+class InstanceGroups:
+    def __init__(self):
+        self._instances = {
+            "instance": [{"id": "i-0fa3dde55b3ba0", "name": "test-instance"}]
+        }
+
+    def get_group(self, group_name):
+        return self._instances.get(group_name, [])
 
 
-@error_handler
-def instance_state(instance_id: str, dry_run: bool = False) -> str:
-    client = boto3.client("ec2")
-    response = client.describe_instance_status(
-        InstanceIds=[instance_id], DryRun=dry_run
-    )
-    if len(response["InstanceStatuses"]) == 0:
-        return "Instance state: stopped"
-    else:
-        return f'Instance state: {response["InstanceStatuses"][0]["InstanceState"]["Name"]}'
+class Authorization:
+    def __init__(self, token, channel, user):
+        self._instance_groups = InstanceGroups()
+        access_groups = {"channel1": "instance"}
+        if token != "test-token":
+            raise ValueError("Access Denied")
+        if not set([channel, user]) & set(access_groups):
+            raise ValueError("Access Denied")
+
+        self._channel_resources = access_groups.get(channel, "")
+        self._user_resources = access_groups.get(user, "")
+
+    def get_instances(self):
+        channel_instances = self._instance_groups.get_group(self._channel_resources)
+        user_instances = self._instance_groups.get_group(self._user_resources)
+        return [*channel_instances, *user_instances]
 
 
-@error_handler
-def start_instance(instance_id: str, dry_run: bool = False) -> str:
-    client = boto3.client("ec2")
-    response = client.start_instances(InstanceIds=[instance_id], DryRun=dry_run)
-    return format_state_change(
-        response["StartingInstances"][0]["PreviousState"]["Name"],
-        response["StartingInstances"][0]["CurrentState"]["Name"],
-    )
+class Igor:
+    def __init__(self, token, channel, user):
+        self._auth = Authorization(token, channel, user)
+        dry_run = {"dry-run": "dry_run"}
+        force = {"force": "force"}
 
+        self._commands = {
+            "list": {"sub-commands": {}, "exec": self._list_instances},
+            "reboot": {"sub-commands": dry_run, "exec": self._reboot_instance},
+            "start": {"sub-commands": dry_run, "exec": self._start_instance},
+            "state": {"sub-commands": dry_run, "exec": self._instance_state},
+            "stop": {"sub-commands": {**dry_run, **force}, "exec": self._stop_instance},
+        }
 
-@error_handler
-def stop_instance(instance_id: str, dry_run: bool = False, force: bool = False) -> str:
-    client = boto3.client("ec2")
-    response = client.stop_instances(
-        InstanceIds=[instance_id], DryRun=dry_run, Force=force
-    )
-    return format_state_change(
-        response["StoppingInstances"][0]["PreviousState"]["Name"],
-        response["StoppingInstances"][0]["CurrentState"]["Name"],
-    )
+    def do_task(self, message: str) -> str:
+        instruction = message.split()
+        command = self._valide_command(instruction[0])
+        instance_id = self._get_instance_id(instruction[1])
+        kwargs = self._get_kwarg_subcommands(command, instruction[2:])
+        kwargs = {**kwargs, "instance_id": instance_id}
+        return self._commands[command]["exec"](**kwargs)
 
+    def _format_state_change(self, prev: str, curr: str) -> str:
+        if prev == curr:
+            return f"Instance state has not changed from: {curr}"
+        else:
+            return f"Changing instande state: {prev} --> {curr}"
 
-@error_handler
-def reboot_instance(instance_id: str, dry_run: bool = False) -> str:
-    client = boto3.client("ec2")
-    client.reboot_instances(InstanceIds=[instance_id], DryRun=dry_run)
-    return "Instance is rebooting"
+    @error_handler
+    def _instance_state(self, instance_id: str, dry_run: bool = False, **kwargs) -> str:
+        client = boto3.client("ec2")
+        response = client.describe_instance_status(
+            InstanceIds=[instance_id], DryRun=dry_run
+        )
+        if len(response["InstanceStatuses"]) == 0:
+            return "Instance state: stopped"
+        else:
+            return f'Instance state: {response["InstanceStatuses"][0]["InstanceState"]["Name"]}'
 
+    @error_handler
+    def _start_instance(self, instance_id: str, dry_run: bool = False, **kwargs) -> str:
+        client = boto3.client("ec2")
+        response = client.start_instances(InstanceIds=[instance_id], DryRun=dry_run)
+        return self._format_state_change(
+            response["StartingInstances"][0]["PreviousState"]["Name"],
+            response["StartingInstances"][0]["CurrentState"]["Name"],
+        )
 
-def list_instances(instances: List) -> str:
-    return ", ".join([f'"{i["name"]}"' for i in instances])
+    @error_handler
+    def _stop_instance(
+        self, instance_id: str, dry_run: bool = False, force: bool = False, **kwargs
+    ) -> str:
+        client = boto3.client("ec2")
+        response = client.stop_instances(
+            InstanceIds=[instance_id], DryRun=dry_run, Force=force
+        )
+        return self._format_state_change(
+            response["StoppingInstances"][0]["PreviousState"]["Name"],
+            response["StoppingInstances"][0]["CurrentState"]["Name"],
+        )
 
+    @error_handler
+    def _reboot_instance(
+        self, instance_id: str, dry_run: bool = False, **kwargs
+    ) -> str:
+        client = boto3.client("ec2")
+        client.reboot_instances(InstanceIds=[instance_id], DryRun=dry_run)
+        return "Instance is rebooting"
 
-def get_instance_id(instance_name: str, channel: str, user: str) -> str:
-    instance_id = {
-        i["id"]
-        for i in [*AUTHORIZED_USERS.get(channel,[]), *AUTHORIZED_USERS.get(user,[])]
-        if instance_name == i["name"]
-    }
-    if len(instance_id) == 0:
-        raise ValueError("Invalid instance name")
+    def _list_instances(self, **kwargs) -> str:
+        instances = self._auth.get_instances()
+        return ", ".join([f'"{i["name"]}"' for i in instances])
 
-    return list(instance_id)[0]
+    def _get_instance_id(self, instance_name: str) -> str:
+        instance_id = {
+            i["id"] for i in self._auth.get_instances() if instance_name == i["name"]
+        }
+        if len(instance_id) == 0:
+            return ""
 
+        return list(instance_id)[0]
 
-def get_kwarg_subcommands(command, possible_subcommands: List) -> Dict:
-    subcommands = VALID_REQUESTS[command]["sub-commands"]
-    # filter for commands that are valid and inject our own valid value.
-    return {
-        subcommands[i]: True for i in list(set(possible_subcommands) & set(subcommands))
-    }
+    def _get_kwarg_subcommands(self, command, possible_subcommands: List) -> Dict:
+        subcommands = self._commands[command]["sub-commands"]
+        # filter for commands that are valid and inject our own valid value.
+        return {
+            subcommands[i]: True
+            for i in list(set(possible_subcommands) & set(subcommands))
+        }
 
-
-def valide_command(command: str) -> str:
-    if command not in VALID_REQUESTS:
-        raise ValueError("Invalid command")
-    return command
-
-
-# This valid requests that are checked before anything is run
-VALID_REQUESTS = {
-    "reboot": {"sub-commands": {"dry-run": "dry_run"}, "function": reboot_instance},
-    "start": {"sub-commands": {"dry-run": "dry_run"}, "function": start_instance},
-    "state": {"sub-commands": {"dry-run": "dry_run"}, "function": instance_state},
-    "stop": {
-        "sub-commands": {"dry-run": "dry_run", "force": "force"},
-        "function": stop_instance,
-    },
-}
+    def _valide_command(self, command: str) -> str:
+        if command not in self._commands:
+            raise ValueError("Invalid command")
+        return command
 
 
 def lambda_handler(event: dict, context: dict) -> str:
@@ -146,24 +171,8 @@ def lambda_handler(event: dict, context: dict) -> str:
     user = event["event"]["user"]
     channel = event["event"]["channel"]
     token = event["token"]
-
-    if token != TOKEN:
-        raise ValueError("Token not valid")
-
-    # Split on white space
-    instruction = message.split()
-    command = valide_command(instruction[0])
-
-    # Process the instance name by looking through auhtorized users.
-    instance_id = get_instance_id(instruction[1], channel, user)
-
-    # Get the kwarg subcommands that can be passed into the command's function
-    kwarg_subcommands = get_kwarg_subcommands(command, instruction[2:])
-
-    # Call the function registered to this command
-    result = VALID_REQUESTS[command]["function"](
-        instance_id, **kwarg_subcommands
-    )
+    igor = Igor(token, channel, user)
+    result = igor.do_task(message)
     return result
 
 
