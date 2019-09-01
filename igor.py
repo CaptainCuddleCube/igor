@@ -2,6 +2,7 @@ import boto3
 from botocore.exceptions import ClientError
 from typing import List, Dict
 
+
 # A simple slack bot that allows a user easy access to start, stop, reboot and check the status of
 # an instance. The slack bot works by asking is simple questions. There are 5 stats currently:
 # get-instances, reboot, start, state, stop.
@@ -43,19 +44,15 @@ def error_handler(func):
 
 
 class InstanceGroups:
-    def __init__(self):
-        self._instances = {
-            "instance": [{"id": "i-0fa3dde55b3ba0", "name": "test-instance"}]
-        }
+    def __init__(self, instances):
+        self._instances = instances
 
     def get_group(self, group_name):
         return self._instances.get(group_name, [])
 
 
 class Authorization:
-    def __init__(self, token, channel, user):
-        self._instance_groups = InstanceGroups()
-        access_groups = {"channel1": "instance"}
+    def __init__(self, token, channel, user, access_groups):
         if token != "test-token":
             raise ValueError("Access Denied")
         if not set([channel, user]) & set(access_groups):
@@ -64,32 +61,33 @@ class Authorization:
         self._channel_resources = access_groups.get(channel, "")
         self._user_resources = access_groups.get(user, "")
 
-    def get_instances(self):
-        channel_instances = self._instance_groups.get_group(self._channel_resources)
-        user_instances = self._instance_groups.get_group(self._user_resources)
-        return [*channel_instances, *user_instances]
+    def get_resource_groups(self):
+        return [self._channel_resources, self._user_resources]
 
 
 class Igor:
-    def __init__(self, token, channel, user):
-        self._auth = Authorization(token, channel, user)
+    def __init__(self, token, channel, user, access_groups, instances):
+        self._auth = Authorization(token, channel, user, access_groups)
+        self._instance_groups = InstanceGroups(instances)
         dry_run = {"dry-run": "dry_run"}
         force = {"force": "force"}
-
         self._commands = {
-            "list": {"sub-commands": {}, "exec": self._list_instances},
+            "list-instances": {"sub-commands": {}, "exec": self._list_instances},
             "reboot": {"sub-commands": dry_run, "exec": self._reboot_instance},
             "start": {"sub-commands": dry_run, "exec": self._start_instance},
-            "state": {"sub-commands": dry_run, "exec": self._instance_state},
+            "status": {"sub-commands": dry_run, "exec": self._instance_state},
             "stop": {"sub-commands": {**dry_run, **force}, "exec": self._stop_instance},
         }
 
-    def do_task(self, message: str) -> str:
+    def do_this(self, message: str) -> str:
         instruction = message.split()
-        command = self._valide_command(instruction[0])
+        command = self._parse_command(instruction[0])
         instance_id = self._get_instance_id(instruction[1])
         kwargs = self._get_kwarg_subcommands(command, instruction[2:])
         kwargs = {**kwargs, "instance_id": instance_id}
+        return self._run_command(command, **kwargs)
+
+    def _run_command(self, command, **kwargs):
         return self._commands[command]["exec"](**kwargs)
 
     def _format_state_change(self, prev: str, curr: str) -> str:
@@ -139,18 +137,30 @@ class Igor:
         client.reboot_instances(InstanceIds=[instance_id], DryRun=dry_run)
         return "Instance is rebooting"
 
-    def _list_instances(self, **kwargs) -> str:
-        instances = self._auth.get_instances()
-        return ", ".join([f'"{i["name"]}"' for i in instances])
+    def _get_resources(self):
+        resource_groups = self._auth.get_resource_groups()
+        resources = []
+        for group_name in resource_groups:
+            for resource in self._instance_groups.get_group(group_name):
+                resources.append(resource)
+        return resources
 
     def _get_instance_id(self, instance_name: str) -> str:
         instance_id = {
-            i["id"] for i in self._auth.get_instances() if instance_name == i["name"]
+            i["id"] for i in self._get_resources() if instance_name == i["name"]
         }
         if len(instance_id) == 0:
             return ""
 
         return list(instance_id)[0]
+
+    def _list_instances(self, **kwargs) -> str:
+        return ", ".join([f'"{i["name"]}"' for i in self._get_resources()])
+
+    def _parse_command(self, command: str) -> str:
+        if command not in self._commands:
+            raise ValueError("Invalid command")
+        return command
 
     def _get_kwarg_subcommands(self, command, possible_subcommands: List) -> Dict:
         subcommands = self._commands[command]["sub-commands"]
@@ -160,19 +170,21 @@ class Igor:
             for i in list(set(possible_subcommands) & set(subcommands))
         }
 
-    def _valide_command(self, command: str) -> str:
-        if command not in self._commands:
-            raise ValueError("Invalid command")
-        return command
-
 
 def lambda_handler(event: dict, context: dict) -> str:
     message = event["event"]["text"] if event["event"]["type"] == "message" else ""
     user = event["event"]["user"]
     channel = event["event"]["channel"]
     token = event["token"]
-    igor = Igor(token, channel, user)
-    result = igor.do_task(message)
+
+    # This is configuration that can be used.
+    instance_groups = {
+        "instance": [{"id": "i-0fa3dde55b3ba0", "name": "test-instance"}]
+    }
+    access_groups = {"channel1": "instance"}
+
+    igor = Igor(token, channel, user, access_groups, instance_groups)
+    result = igor.do_this(message)
     return result
 
 
