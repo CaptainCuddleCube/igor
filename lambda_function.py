@@ -24,10 +24,6 @@ import os
 #   - This will stop an instance by providing its name
 #   - You can force the stopping of an instance using force
 #   - You can test this with dry-run
-# print(instance_state(instance["id"], False))
-# print(start_instance(instance["id"], False))
-# print(stop_instance(instance["id"], False))
-# print(list_instances(INSTANCES["token1"]))
 
 
 def error_handler(func):
@@ -56,11 +52,12 @@ class InstanceGroups:
 
 class Auth:
     def __init__(self, access_groups, oauth="", app_token=""):
-        self._app_token = oauth if oauth != "" else os.environ["OAUTH_TOKEN"]
-        self._oauth_token = app_token if app_token else os.environ["APP_TOKEN"]
+        self._oauth_token = oauth if oauth != "" else os.environ["OAUTH_TOKEN"]
+        self._app_token = app_token if app_token != "" else os.environ["SLACK_TOKEN"]
         self._access_groups = access_groups
 
     def validate_token(self, token):
+        print(token, self._app_token)
         if token != self._app_token:
             raise ValueError("Access Denied")
 
@@ -73,6 +70,7 @@ class Auth:
 
     def staple_oath_token(self, data):
         data["token"] = self._oauth_token
+        print(data)
         return data
 
 
@@ -126,10 +124,10 @@ class Igor:
         return response
 
     def _send_slack_message(self, user_message, command_response):
-        message = f"""Master {self._user} told igor to {user_message}.
-                  Making this output: {command_response}"""
+        message = f"""{self._user} told igor to "{user_message}".\n{command_response}"""
         data = dict(channel=self._channel, pretty=1, text=message)
         data = self._auth.staple_oath_token(data)
+        print(data)
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
@@ -137,6 +135,7 @@ class Igor:
         reponse = requests.post(
             "https://slack.com/api/chat.postMessage", data=data, headers=headers
         )
+        print(reponse.json())
 
     def _run_command(self, command, **kwargs):
         return self._commands[command]["exec"](**kwargs)
@@ -230,7 +229,7 @@ def lambda_handler(event, context):
         user = event["user_name"]
         channel = event["channel_id"]
         token = event["token"]
-
+        auth.validate_token(token)
         igor = Igor(auth, channel, user, instance_groups)
         return igor.do_this(message)
     else:
