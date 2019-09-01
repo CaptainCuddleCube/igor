@@ -3,6 +3,7 @@ import boto3
 from botocore.exceptions import ClientError
 from typing import List, Dict
 import requests
+import os
 
 
 # A simple slack bot that allows a user easy access to start, stop, reboot and check the status of
@@ -54,9 +55,9 @@ class InstanceGroups:
 
 
 class Auth:
-    def __init__(self, tokens, access_groups):
-        self._app_token = tokens["app_token"]
-        self._oauth_token = tokens["oauth_token"]
+    def __init__(self, access_groups, oauth="", app_token=""):
+        self._app_token = oauth if oauth != "" else os.environ["OAUTH_TOKEN"]
+        self._oauth_token = app_token if app_token else os.environ["APP_TOKEN"]
         self._access_groups = access_groups
 
     def validate_token(self, token):
@@ -221,8 +222,7 @@ def lambda_handler(event, context):
     if event["command"] == "/igor":
         with open("access_groups.json", "r") as file:
             access_groups = json.load(file)
-        with open("auth.json", "r") as file:
-            auth = Auth(json.load(file), access_groups)
+            auth = Auth(access_groups)
         with open("instance_groups.json", "r") as file:
             instance_groups = InstanceGroups(json.load(file))
 
