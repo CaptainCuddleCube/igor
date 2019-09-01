@@ -1,6 +1,8 @@
+import json
 import boto3
 from botocore.exceptions import ClientError
 from typing import List, Dict
+import requests
 
 
 # A simple slack bot that allows a user easy access to start, stop, reboot and check the status of
@@ -35,7 +37,7 @@ def error_handler(func):
             if "DryRunOperation" in str(error):
                 return "Dry run is successful"
             else:
-                return "A client error has been detected"
+                return "An error with the client or the instance id has been detected"
         except Exception as e:
             print(e)
             return "An error has occured, time to panic"
@@ -51,41 +53,89 @@ class InstanceGroups:
         return self._instances.get(group_name, [])
 
 
-class Authorization:
-    def __init__(self, token, channel, user, access_groups):
-        if token != "test-token":
-            raise ValueError("Access Denied")
-        if not set([channel, user]) & set(access_groups):
+class Auth:
+    def __init__(self, tokens, access_groups):
+        self._app_token = tokens["app_token"]
+        self._oauth_token = tokens["oauth_token"]
+        self._access_groups = access_groups
+
+    def validate_token(self, token):
+        if token != self._app_token:
             raise ValueError("Access Denied")
 
-        self._channel_resources = access_groups.get(channel, "")
-        self._user_resources = access_groups.get(user, "")
+    def get_resource_groups(self, channel):
 
-    def get_resource_groups(self):
-        return [self._channel_resources, self._user_resources]
+        if not set([channel]) & set(self._access_groups):
+            raise ValueError("Access Denied")
+        channel_resources = self._access_groups.get(channel, "")
+        return channel_resources
+
+    def staple_oath_token(self, data):
+        data["token"] = self._oauth_token
+        return data
 
 
 class Igor:
-    def __init__(self, token, channel, user, access_groups, instances):
-        self._auth = Authorization(token, channel, user, access_groups)
-        self._instance_groups = InstanceGroups(instances)
+    def __init__(self, auth, channel, user_name, instances):
+        self._auth = auth
+        self._channel = channel
+        self._user = user_name
+        self._instance_groups = instances
         dry_run = {"dry-run": "dry_run"}
         force = {"force": "force"}
         self._commands = {
-            "list-instances": {"sub-commands": {}, "exec": self._list_instances},
-            "reboot": {"sub-commands": dry_run, "exec": self._reboot_instance},
-            "start": {"sub-commands": dry_run, "exec": self._start_instance},
-            "status": {"sub-commands": dry_run, "exec": self._instance_state},
-            "stop": {"sub-commands": {**dry_run, **force}, "exec": self._stop_instance},
+            "list-instances": {
+                "sub-commands": {},
+                "exec": self._list_instances,
+                "alert": False,
+            },
+            "reboot": {
+                "sub-commands": dry_run,
+                "exec": self._reboot_instance,
+                "alert": True,
+            },
+            "start": {
+                "sub-commands": dry_run,
+                "exec": self._start_instance,
+                "alert": True,
+            },
+            "status": {
+                "sub-commands": dry_run,
+                "exec": self._instance_state,
+                "alert": True,
+            },
+            "stop": {
+                "sub-commands": {**dry_run, **force},
+                "exec": self._stop_instance,
+                "alert": True,
+            },
         }
 
     def do_this(self, message: str) -> str:
         instruction = message.split()
         command = self._parse_command(instruction[0])
-        instance_id = self._get_instance_id(instruction[1])
+        instance_id = (
+            self._get_instance_id(instruction[1]) if len(instruction) > 1 else ""
+        )
         kwargs = self._get_kwarg_subcommands(command, instruction[2:])
         kwargs = {**kwargs, "instance_id": instance_id}
-        return self._run_command(command, **kwargs)
+        response = self._run_command(command, **kwargs)
+        if self._commands[command]["alert"]:
+            self._send_slack_message(message, response)
+        return response
+
+    def _send_slack_message(self, user_message, command_response):
+        message = f"""Master {self._user} told igor to {user_message}.
+                  Making this output: {command_response}"""
+        data = dict(channel=self._channel, pretty=1, text=message)
+        data = self._auth.staple_oath_token(data)
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        }
+        reponse = requests.post(
+            "https://slack.com/api/chat.postMessage", data=data, headers=headers
+        )
 
     def _run_command(self, command, **kwargs):
         return self._commands[command]["exec"](**kwargs)
@@ -138,12 +188,8 @@ class Igor:
         return "Instance is rebooting"
 
     def _get_resources(self):
-        resource_groups = self._auth.get_resource_groups()
-        resources = []
-        for group_name in resource_groups:
-            for resource in self._instance_groups.get_group(group_name):
-                resources.append(resource)
-        return resources
+        resource_group = self._auth.get_resource_groups(self._channel)
+        return self._instance_groups.get_group(resource_group)
 
     def _get_instance_id(self, instance_name: str) -> str:
         instance_id = {
@@ -155,7 +201,7 @@ class Igor:
         return list(instance_id)[0]
 
     def _list_instances(self, **kwargs) -> str:
-        return ", ".join([f'"{i["name"]}"' for i in self._get_resources()])
+        return ", ".join([f'{i["name"]}' for i in self._get_resources()])
 
     def _parse_command(self, command: str) -> str:
         if command not in self._commands:
@@ -171,33 +217,34 @@ class Igor:
         }
 
 
-def lambda_handler(event: dict, context: dict) -> str:
-    message = event["event"]["text"] if event["event"]["type"] == "message" else ""
-    user = event["event"]["user"]
-    channel = event["event"]["channel"]
-    token = event["token"]
+def lambda_handler(event, context):
+    if event["command"] == "/igor":
+        with open("access_groups.json", "r") as file:
+            access_groups = json.load(file)
+        with open("auth.json", "r") as file:
+            auth = Auth(json.load(file), access_groups)
+        with open("instance_groups.json", "r") as file:
+            instance_groups = InstanceGroups(json.load(file))
 
-    # This is configuration that can be used.
-    instance_groups = {
-        "instance": [{"id": "i-0fa3dde55b3ba0", "name": "test-instance"}]
-    }
-    access_groups = {"channel1": "instance"}
+        message = event["text"]
+        user = event["user_name"]
+        channel = event["channel_id"]
+        token = event["token"]
 
-    igor = Igor(token, channel, user, access_groups, instance_groups)
-    result = igor.do_this(message)
-    return result
+        igor = Igor(auth, channel, user, instance_groups)
+        return igor.do_this(message)
+    else:
+        return f"Command {event['command']} is unknown"
 
 
 if __name__ == "__main__":
     event = {
         "token": "test-token",
-        "event": {
-            "type": "message",
-            "text": "state test-instance",
-            "user": "test",
-            "channel": "channel1",
-            "token": "test-token",
-        },
+        "command": "/igor",
+        "text": "list-instances instance",
+        "user_name": "test-user",
+        "channel_id": "channel1",
+        "token": "test-token",
     }
 
     print(lambda_handler(event, {}))
