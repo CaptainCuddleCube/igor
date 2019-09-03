@@ -27,18 +27,27 @@ from random import uniform
 #   - You can test this with dry-run
 
 
+class PluginError(Exception):
+    pass
+
+
+class DryRunException(Exception):
+    pass
+
+
 def error_handler(func):
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except ClientError as error:
             if "DryRunOperation" in str(error):
-                return "Dry run is successful"
+                raise DryRunException("Dry run was successful")
             else:
-                return "An error with the client or the instance id has been detected"
+                raise PluginError(
+                    "An error with the client or the instance id has been detected"
+                )
         except Exception as e:
-            print(e)
-            return "An error has occured, time to panic"
+            raise PluginError("An unkown error has occured, time to panic: " + str(e))
 
     return wrapper
 
@@ -61,6 +70,22 @@ class Auth:
 
 
 class AwsFunctions:
+    schema = {
+        "get_instance_names": {
+            "required": ["channel"],
+            "switches": [],
+            "help": "Returns a list of the instance names your channel can see.",
+        },
+        "get_instance_id": {"required": ["channel", "instance_name"], "switches": []},
+        "instance_state": {"required": ["instance_id"], "switches": ["dry_run"]},
+        "start_instance": {"required": ["instance_id"], "switches": ["dry_run"]},
+        "stop_instance": {
+            "required": ["instance_id"],
+            "switches": ["dry_run", "force"],
+        },
+        "reboot_instance": {"required": ["instance_id"], "switches": ["dry_run"]},
+    }
+
     @staticmethod
     @error_handler
     def get_instance_names(channel):
@@ -79,12 +104,12 @@ class AwsFunctions:
 
     @staticmethod
     @error_handler
-    def get_instance_id(channel, name):
+    def get_instance_id(channel, instance_name):
         client = boto3.client("ec2")
         response = client.describe_instances(
             Filters=[
                 {"Name": "tag:Channel_id", "Values": [channel]},
-                {"Name": "tag:Name", "Values": [name]},
+                {"Name": "tag:Name", "Values": [instance_name]},
             ]
         )
         for i in response["Reservations"]:
@@ -148,7 +173,7 @@ class Igor:
         self._auth = Auth(token)
         self._channel = channel
         self._user = user_name
-        self._exec_function_group = {"AwsFunctions": AwsFunctions}
+        self._plugins = {"AwsFunctions": AwsFunctions, "igor": self}
         self._peon_quotes = [
             "No time for play.",
             "Me not that kind of orc!",
@@ -158,50 +183,37 @@ class Igor:
             "Froedrick!",
             "I've got no body, nobody's got me. Hachachacha.",
         ]
-        self._commands = {
+
+        self.commands = {
             "list-instances": {
-                "sub-commands": [],
-                "requires": ["channel"],
-                "exec": {
-                    "function_group": "AwsFunctions",
-                    "function": "get_instance_names",
-                },
-                "alert": False,
+                "plugin": {"name": "AwsFunctions", "function": "get_instance_names"},
+                "slack-alert": False,
             },
             "reboot": {
-                "sub-commands": ["dry_run"],
-                "requires": ["instance_id"],
-                "exec": {
-                    "function_group": "AwsFunctions",
-                    "function": "reboot_instance",
-                },
-                "alert": True,
+                "plugin": {"name": "AwsFunctions", "function": "reboot_instance"},
+                "slack-alert": True,
             },
             "start": {
-                "sub-commands": ["dry_run"],
-                "requires": ["instance_id"],
-                "exec": {
-                    "function_group": "AwsFunctions",
-                    "function": "start_instance",
-                },
-                "alert": True,
+                "plugin": {"name": "AwsFunctions", "function": "start_instance"},
+                "slack-alert": True,
             },
             "status": {
-                "sub-commands": ["dry_run"],
-                "requires": ["instance_id"],
-                "exec": {
-                    "function_group": "AwsFunctions",
-                    "function": "instance_state",
-                },
-                "alert": True,
+                "plugin": {"name": "AwsFunctions", "function": "instance_state"},
+                "slack-alert": True,
             },
             "stop": {
-                "sub-commands": ["dry_run", "force"],
-                "requires": ["instance_id"],
-                "exec": {"function_group": "AwsFunctions", "function": "stop_instance"},
-                "alert": True,
+                "plugin": {"name": "AwsFunctions", "function": "stop_instance"},
+                "slack-alert": True,
+            },
+            "help": {
+                "plugin": {"name": "igor", "function": "help"},
+                "slack-alert": False,
             },
         }
+
+    schema = {
+        "help": {"required": [], "switches": [], "help": "A simple help function."}
+    }
 
     def do_this(self, message: str) -> str:
         instruction = message.split()
@@ -213,18 +225,40 @@ class Igor:
         )
         kwargs = self._get_kwarg_subcommands(command, instruction[2:])
         kwargs = {**kwargs, **self._required_inputs(command, instance_id)}
-        response = self._run_command(command, **kwargs)
-        if self._commands[command]["alert"]:
-            self.send_slack_message(message, response)
-            print(response)
-            return self._peon_quotes[int(uniform(0, len(self._peon_quotes)))]
-        else:
-            return response
+        try:
+            response = self._run_command(command, **kwargs)
+            if self.commands[command]["slack-alert"]:
+                self.send_slack_message(message, response)
+                print(response)
+                return self._peon_quotes[int(uniform(0, len(self._peon_quotes)))]
+            else:
+                return response
+        except DryRunException as e:
+            return f"Command '{command}': {str(e)}"
+        except PluginError as e:
+            plugin_name = self.commands[command]["plugin"]["name"]
+            return f"Error with plugin {plugin_name}: " + str(e)
+        except Exception as e:
+            return "Error: " + str(e)
 
     def _required_inputs(self, command, instance_id):
-        requirements = self._commands[command]["requires"]
+        requirements = self._get_command_info(command)["required"]
         switch = {"channel": self._channel, "instance_id": instance_id}
         return {name: switch[name] for name in requirements}
+
+    def help(self):
+        msg = "Igor is your friendly worker that helps control things for you!\n"
+        msg += "The currently supported commands are:\n"
+        for i in self.commands:
+            msg += f"{i}"
+            if "help" in self._get_command_info(i):
+                msg += ": " + self._get_command_info(i)["help"]
+            msg += "\n"
+        return msg
+
+    def _get_command_info(self, command):
+        plugin = self._plugins[self.commands[command]["plugin"]["name"]]
+        return plugin.schema[self.commands[command]["plugin"]["function"]]
 
     def send_slack_message(self, user_message, command_response):
         message = f"""{self._user} told igor to "{user_message}".\n{command_response}"""
@@ -239,24 +273,20 @@ class Igor:
         )
 
     def _run_command(self, command, **kwargs):
-        func_group = self._exec_function_group[
-            self._commands[command]["exec"]["function_group"]
-        ]
-        func = getattr(func_group, self._commands[command]["exec"]["function"])
-        return func(**kwargs)
+        plugin = self._plugins[self.commands[command]["plugin"]["name"]]
+        func = getattr(plugin, self.commands[command]["plugin"]["function"])
+        response = func(**kwargs)
+        return response
 
     def _parse_command(self, command: str) -> str:
-        if command not in self._commands:
+        if command not in self.commands:
             raise ValueError("Invalid command")
         return command
 
     def _get_kwarg_subcommands(self, command, provided_subcommands: List) -> Dict:
-        subcommands = self._commands[command]["sub-commands"]
+        subcommands = self._get_command_info(command)["switches"]
         # filter for commands that are valid and inject our own valid value.
-        return {
-            subcommands[i]: True
-            for i in list(set(provided_subcommands) & set(subcommands))
-        }
+        return {i: True for i in list(set(provided_subcommands) & set(subcommands))}
 
 
 def lambda_handler(event, context):
@@ -275,9 +305,9 @@ if __name__ == "__main__":
     event = {
         "token": "test-token",
         "command": "/igor",
-        "text": "stop Test-instance",
+        "text": "status Test-instance dry_run",
         "user_name": "test-user",
-        "channel_id": "channel1",
+        "channel_id": "CMQEC73B3",
     }
 
     print(lambda_handler(event, {}))
