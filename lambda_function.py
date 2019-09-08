@@ -71,24 +71,24 @@ class Auth:
 
 class AwsFunctions:
     schema = {
-        "get_instance_names": {
+        "instance_names": {
             "required": ["channel"],
             "switches": [],
             "help": "Returns a list of the instance names your channel can see.",
         },
-        "get_instance_id": {"required": ["channel", "instance_name"], "switches": []},
+        "instance_id": {"required": ["channel", "instance_name"], "switches": []},
         "instance_state": {"required": ["instance_id"], "switches": ["dry_run"]},
         "start_instance": {"required": ["instance_id"], "switches": ["dry_run"]},
         "stop_instance": {
             "required": ["instance_id"],
             "switches": ["dry_run", "force"],
         },
-        "reboot_instance": {"required": ["instance_id"], "switches": ["dry_run"]},
+        "reboot_instance": {"required": ["instance_name"], "switches": ["dry_run"]},
     }
 
     @staticmethod
     @error_handler
-    def get_instance_names(channel):
+    def instance_names(channel):
         client = boto3.client("ec2")
         response = client.describe_instances(
             Filters=[{"Name": f"tag:Channel_id", "Values": [channel]}]
@@ -104,7 +104,7 @@ class AwsFunctions:
 
     @staticmethod
     @error_handler
-    def get_instance_id(channel, instance_name):
+    def instance_id(channel, instance_name):
         client = boto3.client("ec2")
         response = client.describe_instances(
             Filters=[
@@ -171,9 +171,10 @@ class AwsFunctions:
 class Igor:
     def __init__(self, channel, user_name, token):
         self._auth = Auth(token)
-        self._channel = channel
-        self._user = user_name
+        self.channel = channel
+        self.user = user_name
         self._plugins = {"AwsFunctions": AwsFunctions, "igor": self}
+
         self._peon_quotes = [
             "No time for play.",
             "Me not that kind of orc!",
@@ -186,7 +187,7 @@ class Igor:
 
         self.commands = {
             "list-instances": {
-                "plugin": {"name": "AwsFunctions", "function": "get_instance_names"},
+                "plugin": {"name": "AwsFunctions", "function": "instance_names"},
                 "slack-alert": False,
             },
             "reboot": {
@@ -215,16 +216,79 @@ class Igor:
         "help": {"required": [], "switches": [], "help": "A simple help function."}
     }
 
+    def _params(self):
+        return set(
+            [
+                i
+                for i in dir(self)
+                if not i.startswith("_") and not callable(getattr(self, i))
+            ]
+        )
+
     def do_this(self, message: str) -> str:
         instruction = message.split()
         command = self._parse_command(instruction[0])
-        instance_id = (
-            AwsFunctions.get_instance_id(self._channel, instruction[1])
-            if len(instruction) > 1
-            else ""
-        )
-        kwargs = self._get_kwarg_subcommands(command, instruction[2:])
-        kwargs = {**kwargs, **self._required_inputs(command, instance_id)}
+
+        sub_commands = instruction[1:]
+        pairs = {}
+        key = None
+        next_is_paired = False
+        for i in sub_commands:
+            if i.startswith("-"):
+                next_is_paired = True
+                key = i.replace("-", "")
+            elif next_is_paired:
+                pairs[key] = i
+                next_is_paired = False
+                key = None
+
+        requirements = self._get_command_info(command)["required"]
+
+        print(pairs)
+        # print(requirements)
+        # print(self._params())
+
+        igor_params = self._params()
+        plugin_params = set(requirements) & (set(requirements) ^ self._params())
+
+        print(plugin_params)
+        # if len(plugin_params) > len(instruction[1:]):
+        #     return "Not enough arguments supplied"
+
+        kwargs = {}
+        for i in igor_params:
+            kwargs[i] = getattr(self, i)
+
+        pairs = {**pairs, **kwargs}
+        data = {}
+        for i in plugin_params:
+            plugin = self._plugins[self.commands[command]["plugin"]["name"]]
+            reqs = plugin.schema[i]["required"]
+            func = getattr(plugin, i)
+            req = {k: pairs[k] for k in reqs}
+            data = {**data, **{i: func(**req)}}
+
+        kwargs = {**data, **{k: pairs[k] for k in requirements if k in pairs}}
+
+        # print(igor_params)
+        # print(plugin_params)
+
+        # kwargs = {}
+        # for i in igor_params:
+        #     plugin = self._plugins[self.commands[command]["plugin"]["name"]]
+        #     kwargs[i] = getattr(plugin, i)
+
+        # # for param in plugin_params:
+        # #     plugin = self._plugin[self.commands[command]["plugin"]["name"]]
+        # #     plugin.schema[param]
+
+        # instance_id = (
+        #     AwsFunctions.instance_id(self.channel, instruction[1])
+        #     if len(instruction) > 1
+        #     else ""
+        # )
+        # kwargs = self._get_kwarg_subcommands(command, instruction[2:])
+        # kwargs = {**kwargs, **self._required_inputs(command, instance_id)}
         try:
             response = self._run_command(command, **kwargs)
             if self.commands[command]["slack-alert"]:
@@ -243,7 +307,7 @@ class Igor:
 
     def _required_inputs(self, command, instance_id):
         requirements = self._get_command_info(command)["required"]
-        switch = {"channel": self._channel, "instance_id": instance_id}
+        switch = {"channel": self.channel, "instance_id": instance_id}
         return {name: switch[name] for name in requirements}
 
     def help(self):
@@ -261,8 +325,8 @@ class Igor:
         return plugin.schema[self.commands[command]["plugin"]["function"]]
 
     def send_slack_message(self, user_message, command_response):
-        message = f"""{self._user} told igor to "{user_message}".\n{command_response}"""
-        data = dict(channel=self._channel, pretty=1, text=message)
+        message = f"""{self.user} told igor to "{user_message}".\n{command_response}"""
+        data = dict(channel=self.channel, pretty=1, text=message)
         data = self._auth.staple_oath_token(data)
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
@@ -305,7 +369,7 @@ if __name__ == "__main__":
     event = {
         "token": "test-token",
         "command": "/igor",
-        "text": "status Test-instance dry_run",
+        "text": "stop -instance_name Test-instance",
         "user_name": "test-user",
         "channel_id": "CMQEC73B3",
     }
