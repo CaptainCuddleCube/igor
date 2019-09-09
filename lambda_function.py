@@ -4,27 +4,8 @@ from botocore.exceptions import ClientError
 from typing import List, Dict
 import requests
 import os
+import shlex
 from random import uniform
-
-
-# A simple slack bot that allows a user easy access to start, stop, reboot and check the status of
-# an instance. The slack bot works by asking is simple questions. There are 5 stats currently:
-# get-instances, reboot, start, state, stop.
-# /igor list-instances
-#   - This will return a list of the instances, and their dns names
-# /igor reboot <instance-name> <options:dry-run>
-#   - This will reboot an instance by providing its name
-#   - You can test this with dry-run
-# /igor start <instance-name> <options:dry-run>
-#   - This will start an instance by providing its name
-#   - You can test this with dry-run
-# /igor state <instance-name> <options:dry-run>
-#   - This will return the state of an instance by providing its name
-#   - You can test this with dry-run
-# /igor stop <instance-name> <options:dry-run,force>
-#   - This will stop an instance by providing its name
-#   - You can force the stopping of an instance using force
-#   - You can test this with dry-run
 
 
 class PluginError(Exception):
@@ -77,13 +58,22 @@ class AwsFunctions:
             "help": "Returns a list of the instance names your channel can see.",
         },
         "instance_id": {"required": ["channel", "instance_name"], "switches": []},
-        "instance_state": {"required": ["instance_id"], "switches": ["dry_run"]},
-        "start_instance": {"required": ["instance_id"], "switches": ["dry_run"]},
+        "instance_state": {
+            "required": ["instance_name", "channel"],
+            "switches": ["dry_run"],
+        },
+        "start_instance": {
+            "required": ["instance_name", "channel"],
+            "switches": ["dry_run"],
+        },
         "stop_instance": {
-            "required": ["instance_id"],
+            "required": ["instance_name", "channel"],
             "switches": ["dry_run", "force"],
         },
-        "reboot_instance": {"required": ["instance_name"], "switches": ["dry_run"]},
+        "reboot_instance": {
+            "required": ["instance_name", "channel"],
+            "switches": ["dry_run"],
+        },
     }
 
     @staticmethod
@@ -119,7 +109,8 @@ class AwsFunctions:
 
     @staticmethod
     @error_handler
-    def instance_state(instance_id: str, dry_run: bool = False) -> str:
+    def instance_state(instance_name: str, channel: str, dry_run: bool = False) -> str:
+        instance_id = AwsFunctions.instance_id(channel, instance_name)
         client = boto3.client("ec2")
         response = client.describe_instance_status(
             InstanceIds=[instance_id], DryRun=dry_run
@@ -131,7 +122,8 @@ class AwsFunctions:
 
     @staticmethod
     @error_handler
-    def start_instance(instance_id: str, dry_run: bool = False) -> str:
+    def start_instance(instance_name: str, channel: str, dry_run: bool = False) -> str:
+        instance_id = AwsFunctions.instance_id(channel, instance_name)
         client = boto3.client("ec2")
         response = client.start_instances(InstanceIds=[instance_id], DryRun=dry_run)
         return AwsFunctions._format_state_change(
@@ -141,8 +133,9 @@ class AwsFunctions:
     @staticmethod
     @error_handler
     def stop_instance(
-        instance_id: str, dry_run: bool = False, force: bool = False
+        instance_name: str, channel: str, dry_run: bool = False, force: bool = False
     ) -> str:
+        instance_id = AwsFunctions.instance_id(channel, instance_name)
         client = boto3.client("ec2")
         response = client.stop_instances(
             InstanceIds=[instance_id], DryRun=dry_run, Force=force
@@ -153,7 +146,8 @@ class AwsFunctions:
 
     @staticmethod
     @error_handler
-    def reboot_instance(instance_id: str, dry_run: bool = False) -> str:
+    def reboot_instance(instance_name: str, channel: str, dry_run: bool = False) -> str:
+        instance_id = AwsFunctions.instance_id(channel, instance_name)
         client = boto3.client("ec2")
         client.reboot_instances(InstanceIds=[instance_id], DryRun=dry_run)
         return "Instance is rebooting"
@@ -169,11 +163,11 @@ class AwsFunctions:
 
 
 class Igor:
-    def __init__(self, channel, user_name, token):
-        self._auth = Auth(token)
+    def __init__(self, channel, user_name, auth, plugins):
+        self._auth = auth
         self.channel = channel
         self.user = user_name
-        self._plugins = {"AwsFunctions": AwsFunctions, "igor": self}
+        self._plugins = {**plugins, **{"igor": self}}
 
         self._peon_quotes = [
             "No time for play.",
@@ -225,70 +219,75 @@ class Igor:
             ]
         )
 
-    def do_this(self, message: str) -> str:
-        instruction = message.split()
-        command = self._parse_command(instruction[0])
-
-        sub_commands = instruction[1:]
+    def _parse_value_pairs(self, unordered_pairs):
         pairs = {}
         key = None
         next_is_paired = False
-        for i in sub_commands:
-            if i.startswith("-"):
+        for i in unordered_pairs:
+            if i.startswith("--"):
                 next_is_paired = True
-                key = i.replace("-", "")
+                key = i.replace("--", "")
             elif next_is_paired:
                 pairs[key] = i
                 next_is_paired = False
                 key = None
+        return pairs
+
+    def _gather_requirements(
+        self, pairs: dict, command: str, plugin_params: list
+    ) -> dict:
+        """
+        A function that will keep looking for dependencies required to 
+        fulfill a request.
+        """
+        data = {}
+        missing_params = [i for i in plugin_params if i not in pairs]
+        for i in missing_params:
+            plugin = self._plugins[self.commands[command]["plugin"]["name"]]
+            reqs = plugin.schema[i]["required"]
+            needed = [i for i in reqs if i not in pairs]
+            pairs = self._gather_requirements(
+                pairs=pairs, command=command, plugin_params=needed
+            )
+            func = getattr(plugin, i)
+            req = {k: pairs[k] for k in reqs}
+            data = {**data, **{i: func(**req)}}
+
+        return {**data, **pairs}
+
+    def do_this(self, message: str) -> str:
+        instruction = shlex.split(message)
+        command = self._parse_command(instruction[0])
+
+        sub_commands = instruction[1:]
+        if sub_commands[0].startswith("--"):
+            pairs = self._parse_value_pairs(sub_commands)
+        else:
+            return "Sub commands are not support yet"
 
         requirements = self._get_command_info(command)["required"]
-
-        print(pairs)
-        # print(requirements)
-        # print(self._params())
-
         igor_params = self._params()
         plugin_params = set(requirements) & (set(requirements) ^ self._params())
-
-        print(plugin_params)
-        # if len(plugin_params) > len(instruction[1:]):
-        #     return "Not enough arguments supplied"
 
         kwargs = {}
         for i in igor_params:
             kwargs[i] = getattr(self, i)
 
-        pairs = {**pairs, **kwargs}
-        data = {}
-        for i in plugin_params:
-            plugin = self._plugins[self.commands[command]["plugin"]["name"]]
-            reqs = plugin.schema[i]["required"]
-            func = getattr(plugin, i)
-            req = {k: pairs[k] for k in reqs}
-            data = {**data, **{i: func(**req)}}
+        # explicitly filtering out harmful user inputs, and add igor params
+        pairs = {
+            **{
+                valid_pair: pairs[valid_pair]
+                for valid_pair in pairs
+                if valid_pair not in kwargs
+            },
+            **kwargs,
+        }
 
-        kwargs = {**data, **{k: pairs[k] for k in requirements if k in pairs}}
+        data = self._gather_requirements(pairs, command, plugin_params)
+        kwargs = {**data, **pairs}
 
-        # print(igor_params)
-        # print(plugin_params)
+        kwargs = {k: kwargs[k] for k in kwargs if k in requirements}
 
-        # kwargs = {}
-        # for i in igor_params:
-        #     plugin = self._plugins[self.commands[command]["plugin"]["name"]]
-        #     kwargs[i] = getattr(plugin, i)
-
-        # # for param in plugin_params:
-        # #     plugin = self._plugin[self.commands[command]["plugin"]["name"]]
-        # #     plugin.schema[param]
-
-        # instance_id = (
-        #     AwsFunctions.instance_id(self.channel, instruction[1])
-        #     if len(instruction) > 1
-        #     else ""
-        # )
-        # kwargs = self._get_kwarg_subcommands(command, instruction[2:])
-        # kwargs = {**kwargs, **self._required_inputs(command, instance_id)}
         try:
             response = self._run_command(command, **kwargs)
             if self.commands[command]["slack-alert"]:
@@ -311,8 +310,8 @@ class Igor:
         return {name: switch[name] for name in requirements}
 
     def help(self):
-        msg = "Igor is your friendly worker that helps control things for you!\n"
-        msg += "The currently supported commands are:\n"
+        msg = "Igor is your friendly worker that helps control things for you!\n\n"
+        msg += "The currently supported commands are:\n\n"
         for i in self.commands:
             msg += f"{i}"
             if "help" in self._get_command_info(i):
@@ -359,7 +358,9 @@ def lambda_handler(event, context):
         user = event["user_name"]
         channel = event["channel_id"]
         token = event["token"]
-        igor = Igor(channel, user, token)
+        auth = Auth(token)
+        plugins = {"AwsFunctions": AwsFunctions}
+        igor = Igor(channel, user, auth, plugins)
         return igor.do_this(message)
     else:
         return f"Command {event['command']} is unknown"
@@ -369,9 +370,9 @@ if __name__ == "__main__":
     event = {
         "token": "test-token",
         "command": "/igor",
-        "text": "stop -instance_name Test-instance",
+        "text": "stop --instance_name Test-instance --channel XXX",
         "user_name": "test-user",
-        "channel_id": "CMQEC73B3",
+        "channel_id": "ABCDE33",
     }
 
     print(lambda_handler(event, {}))
