@@ -255,71 +255,108 @@ class Igor:
 
         return {**data, **pairs}
 
+    def _get_switches(self, function_switches, instruction):
+        kwargs = {}
+        for switch in function_switches:
+            if "--" + switch in instruction:
+                kwargs[switch] = True
+        return kwargs
+
+    def _extract_required_args(self, function_requirements, instruction):
+        args = []
+        # Getting the oridinal values.
+        for i in instruction:
+            if i.startswith("--"):
+                break
+            else:
+                args.append(i)
+                function_requirements = function_requirements[1:]
+                instruction = instruction[1:]
+
+        return (args, instruction, function_requirements)
+
+    def _extract_required_kwargs(self, function_requirements, instruction):
+        kwargs = {}
+        for req in function_requirements:
+            if "--" + req in instruction:
+                index = instruction.index("--" + req)
+                if index == len(instruction) - 1:
+                    raise ValueError("Invalid command")
+                kwargs[req] = instruction[+1]
+                function_requirements = function_requirements[1:]
+                instruction = instruction[:index] + instruction[index + 2 :]
+
+        return (kwargs, instruction, function_requirements)
+
+    def _get_parameters(self, requirements, function_switches, instruction):
+        args, instruction, requirements = self._extract_required_args(
+            requirements, instruction
+        )
+        kwargs, instruction, requirements = self._extract_required_kwargs(
+            requirements, instruction
+        )
+        assert (
+            len(requirements) == 0
+        ), f"The requirments: {requirements} have not been met"
+
+        # Extract the switches.
+        kwargs = {**kwargs, **self._get_switches(function_switches, instruction)}
+
+        return args, kwargs
+
+    def _get_plugin(self, command):
+        plugin_name = self.commands[command]["plugin"]["name"]
+        return self._plugins[plugin_name]
+
     def do_this(self, message: str) -> str:
         instruction = shlex.split(message)
-        command = self._parse_command(instruction[0])
+        root_command = self._parse_command(instruction[0])
 
-        sub_commands = instruction[1:]
-        if sub_commands[0].startswith("--"):
-            pairs = self._parse_value_pairs(sub_commands)
-        else:
-            return "Sub commands are not support yet"
+        instruction = instruction[1:]
+        plugin = self._get_plugin(root_command)
+        function = self.commands[root_command]["plugin"]["function"]
 
-        requirements = self._get_command_info(command)["required"]
-        igor_params = self._params()
-        plugin_params = set(requirements) & (set(requirements) ^ self._params())
-
-        kwargs = {}
-        for i in igor_params:
-            kwargs[i] = getattr(self, i)
-
-        # explicitly filtering out harmful user inputs, and add igor params
-        pairs = {
-            **{
-                valid_pair: pairs[valid_pair]
-                for valid_pair in pairs
-                if valid_pair not in kwargs
-            },
-            **kwargs,
-        }
-
-        data = self._gather_requirements(pairs, command, plugin_params)
-        kwargs = {**data, **pairs}
-
-        kwargs = {k: kwargs[k] for k in kwargs if k in requirements}
+        # we need to get the schema information:
+        schema = self._get_plugin_schema(root_command)
+        function_reqs = schema.get("required", [])
+        function_switches = schema.get("switches", [])
+        # Getting the args and kwargs used for this parameter.
+        args, kwargs = self._get_parameters(
+            function_reqs, function_switches, instruction
+        )
 
         try:
-            response = self._run_command(command, **kwargs)
-            if self.commands[command]["slack-alert"]:
+            response = getattr(plugin, function)(*args, **kwargs)
+            if self.commands[root_command]["slack-alert"]:
                 self.send_slack_message(message, response)
                 print(response)
                 return self._peon_quotes[int(uniform(0, len(self._peon_quotes)))]
             else:
                 return response
         except DryRunException as e:
-            return f"Command '{command}': {str(e)}"
+            return f"Command '{root_command}': {str(e)}"
         except PluginError as e:
-            plugin_name = self.commands[command]["plugin"]["name"]
+            plugin_name = self.commands[root_command]["plugin"]["name"]
             return f"Error with plugin {plugin_name}: " + str(e)
         except Exception as e:
             return "Error: " + str(e)
 
-    def _required_inputs(self, command, instance_id):
-        requirements = self._get_command_info(command)["required"]
-        switch = {"channel": self.channel, "instance_id": instance_id}
-        return {name: switch[name] for name in requirements}
+    # def _required_inputs(self, command, instance_id):
+    #     requirements = self._get_command_info(command)["required"]
+    #     switch = {"channel": self.channel, "instance_id": instance_id}
+    #     return {name: switch[name] for name in requirements}
 
     def help(self):
         msg = "Igor is your friendly worker that helps control things for you!\n\n"
         msg += "The currently supported commands are:\n\n"
         for i in self.commands:
             msg += f"{i}"
-            if "help" in self._get_command_info(i):
-                msg += ": " + self._get_command_info(i)["help"]
+            if "help" in self._get_plugin_schema(i):
+                msg += ": " + self._get_plugin_schema(i)["help"]
             msg += "\n"
         return msg
 
-    def _get_command_info(self, command):
+    def _get_plugin_schema(self, command):
         plugin = self._plugins[self.commands[command]["plugin"]["name"]]
         return plugin.schema[self.commands[command]["plugin"]["function"]]
 
@@ -335,21 +372,21 @@ class Igor:
             "https://slack.com/api/chat.postMessage", data=data, headers=headers
         )
 
-    def _run_command(self, command, **kwargs):
-        plugin = self._plugins[self.commands[command]["plugin"]["name"]]
-        func = getattr(plugin, self.commands[command]["plugin"]["function"])
-        response = func(**kwargs)
-        return response
+    # def _run_command(self, command, **kwargs):
+    #     plugin = self._plugins[self.commands[command]["plugin"]["name"]]
+    #     func = getattr(plugin, self.commands[command]["plugin"]["function"])
+    #     response = func(**kwargs)
+    #     return response
 
     def _parse_command(self, command: str) -> str:
         if command not in self.commands:
             raise ValueError("Invalid command")
         return command
 
-    def _get_kwarg_subcommands(self, command, provided_subcommands: List) -> Dict:
-        subcommands = self._get_command_info(command)["switches"]
-        # filter for commands that are valid and inject our own valid value.
-        return {i: True for i in list(set(provided_subcommands) & set(subcommands))}
+    # def _get_kwarg_subcommands(self, command, provided_subcommands: List) -> Dict:
+    #     subcommands = self._get_command_info(command)["switches"]
+    #     # filter for commands that are valid and inject our own valid value.
+    #     return {i: True for i in list(set(provided_subcommands) & set(subcommands))}
 
 
 def lambda_handler(event, context):
@@ -370,7 +407,7 @@ if __name__ == "__main__":
     event = {
         "token": "test-token",
         "command": "/igor",
-        "text": "stop --instance_name Test-instance --channel XXX",
+        "text": "list-instances --instance_name Test-instance --channel XXX",
         "user_name": "test-user",
         "channel_id": "ABCDE33",
     }
