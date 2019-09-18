@@ -109,3 +109,4 @@ venv
 packages
 *.zip
 .vscode
+__pycache__
