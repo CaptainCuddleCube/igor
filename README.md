@@ -2,7 +2,13 @@
 
 Igor is a simple slack bot that allows for plugins to be defined to control the instances you need controlled.
 
-## Aws control
+## Plugins
+
+Plugins are broken down into built in and contrib plugins.
+
+### Contrib
+
+#### Aws
 
 Igor has simple slack conrol that help's start, stop, reboot and check the status of
 an instance.
@@ -18,7 +24,7 @@ get-instances, reboot, start, state, stop.
 - /igor start <instance-name> <options:dry-run>
   - This will start an instance by providing its name
   - You can test this with dry-run
-- /igor state <instance-name> <options:dry-run>
+- /igor status <instance-name> <options:dry-run>
   - This will return the state of an instance by providing its name
   - You can test this with dry-run
 - /igor stop <instance-name> <options:dry-run,force>

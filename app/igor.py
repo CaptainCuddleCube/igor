@@ -158,11 +158,16 @@ class Igor:
 
     def help(self):
         msg = "Igor is your friendly worker that helps control things for you!\n\n"
-        msg += "The currently supported commands are:\n\n"
         for i in self.commands:
             msg += f"{i}"
-            if "help" in self._get_plugin_schema(i):
-                msg += ": " + self._get_plugin_schema(i)["help"]
+            # if "help" in self._get_plugin_schema(i):
+            msg += ": " + self._get_plugin_schema(i).get("help", "") + "\n"
+            for req in self._get_plugin_schema(i).get("required", []):
+                msg += "\t- " + req + ": required\n"
+
+            for switch in self._get_plugin_schema(i).get("switches", []):
+                msg += "\t- " + switch + ": switch\n"
+
             msg += "\n"
         return msg
 

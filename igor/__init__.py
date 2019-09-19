@@ -1,1 +1,0 @@
-from .igor import Igor

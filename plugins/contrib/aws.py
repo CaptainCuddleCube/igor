@@ -1,7 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
 
-from .exceptions import PluginError
+from plugins.exceptions import PluginError
 
 
 def error_handler(func):
@@ -21,7 +21,7 @@ def error_handler(func):
     return wrapper
 
 
-class AwsFunctions:
+class InstanceControl:
     def __init__(self, channel):
         self._channel = channel
 
@@ -29,16 +29,33 @@ class AwsFunctions:
             "instance_names": {
                 "required": [],
                 "switches": [],
-                "help": "Returns a list of the instance names your channel can see.",
+                "help": "Returns a list of values of the Name tag for each instance that has has the Channel tag match your slack channel.",
             },
-            "instance_id": {"required": ["instance_name"], "switches": []},
-            "instance_state": {"required": ["instance_name"], "switches": ["dry_run"]},
-            "start_instance": {"required": ["instance_name"], "switches": ["dry_run"]},
+            "instance_id": {
+                "required": ["instance_name"],
+                "switches": [],
+                "help": "Returns an instance id when given the instance's tag Name.",
+            },
+            "instance_state": {
+                "required": ["instance_name"],
+                "switches": ["dry_run"],
+                "help": "Returns the state with the matching Name tag.",
+            },
+            "start_instance": {
+                "required": ["instance_name"],
+                "switches": ["dry_run"],
+                "help": "For a given instance name, this command will ensure the instance is running. It can be run on a running instance.",
+            },
             "stop_instance": {
                 "required": ["instance_name"],
                 "switches": ["dry_run", "force"],
+                "help": "This will shut down the instance when given an instance name.",
             },
-            "reboot_instance": {"required": ["instance_name"], "switches": ["dry_run"]},
+            "reboot_instance": {
+                "required": ["instance_name"],
+                "switches": ["dry_run"],
+                "help": "This will restart an instance.",
+            },
         }
 
     @error_handler

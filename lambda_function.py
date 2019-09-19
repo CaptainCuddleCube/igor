@@ -1,25 +1,32 @@
 import json
 from typing import List, Dict
-import os
-from igor import Igor
-from plugins.aws import AwsFunctions
+from app.igor import Igor
+from plugins.contrib.aws import InstanceControl
+from auth.environment_auth import Auth
 
-
-class Auth:
-    def __init__(self, token=None):
-        self._oauth_token = os.environ["OAUTH_TOKEN"]
-        self._app_token = os.environ["SLACK_TOKEN"]
-        # self._access_groups = access_groups
-        if token is not None:
-            self.validate_token(token)
-
-    def validate_token(self, token):
-        if token != self._app_token:
-            raise ValueError("Access Denied")
-
-    def staple_oath_token(self, data):
-        data["token"] = self._oauth_token
-        return data
+commands = {
+    "list-instances": {
+        "plugin": {"name": "AwsInstanceControl", "function": "instance_names"},
+        "slack-alert": False,
+    },
+    "reboot": {
+        "plugin": {"name": "AwsInstanceControl", "function": "reboot_instance"},
+        "slack-alert": True,
+    },
+    "start": {
+        "plugin": {"name": "AwsInstanceControl", "function": "start_instance"},
+        "slack-alert": True,
+    },
+    "status": {
+        "plugin": {"name": "AwsInstanceControl", "function": "instance_state"},
+        "slack-alert": True,
+    },
+    "stop": {
+        "plugin": {"name": "AwsInstanceControl", "function": "stop_instance"},
+        "slack-alert": True,
+    },
+    "help": {"plugin": {"name": "igor", "function": "help"}, "slack-alert": False},
+}
 
 
 def lambda_handler(event, context):
@@ -29,33 +36,7 @@ def lambda_handler(event, context):
         channel = event["channel_id"]
         token = event["token"]
         auth = Auth(token)
-        plugins = {"AwsFunctions": AwsFunctions(channel)}
-        commands = {
-            "list-instances": {
-                "plugin": {"name": "AwsFunctions", "function": "instance_names"},
-                "slack-alert": False,
-            },
-            "reboot": {
-                "plugin": {"name": "AwsFunctions", "function": "reboot_instance"},
-                "slack-alert": True,
-            },
-            "start": {
-                "plugin": {"name": "AwsFunctions", "function": "start_instance"},
-                "slack-alert": True,
-            },
-            "status": {
-                "plugin": {"name": "AwsFunctions", "function": "instance_state"},
-                "slack-alert": True,
-            },
-            "stop": {
-                "plugin": {"name": "AwsFunctions", "function": "stop_instance"},
-                "slack-alert": True,
-            },
-            "help": {
-                "plugin": {"name": "igor", "function": "help"},
-                "slack-alert": False,
-            },
-        }
+        plugins = {"AwsInstanceControl": InstanceControl(channel)}
         igor = Igor(channel, user, auth, plugins, commands)
         return igor.do_this(message)
     else:
@@ -66,23 +47,34 @@ if __name__ == "__main__":
     event = {
         "token": "test-token",
         "command": "/igor",
+        "text": "help",
+        "user_name": "test-user",
+        "channel_id": "ABCDE33",
+    }
+    print(lambda_handler(event, {}))
+
+    event = {
+        "token": "test-token",
+        "command": "/igor",
+        "text": "list-instances",
+        "user_name": "test-user",
+        "channel_id": "ABCDE33",
+    }
+    print(lambda_handler(event, {}))
+
+    event = {
+        "token": "test-token",
+        "command": "/igor",
         "text": "status Test-instance",
         "user_name": "test-user",
         "channel_id": "ABCDE33",
     }
     print(lambda_handler(event, {}))
+
     event = {
         "token": "test-token",
         "command": "/igor",
         "text": "status --instance_name Test-instance",
-        "user_name": "test-user",
-        "channel_id": "ABCDE33",
-    }
-    print(lambda_handler(event, {}))
-    event = {
-        "token": "test-token",
-        "command": "/igor",
-        "text": "help",
         "user_name": "test-user",
         "channel_id": "ABCDE33",
     }
