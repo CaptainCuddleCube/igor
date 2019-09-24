@@ -1,7 +1,8 @@
 import shlex
 import requests
 from random import uniform
-from plugins.exceptions import PluginError
+from igor.plugins.exceptions import PluginError
+from .defaults import peon_quotes
 
 
 class Igor:
@@ -10,17 +11,7 @@ class Igor:
         self.channel = channel
         self.user = user_name
         self._plugins = {**plugins, **{"igor": self}}
-
-        self._peon_quotes = [
-            "No time for play.",
-            "Me not that kind of orc!",
-            "Okie dokie.",
-            "Work, work.",
-            "Why you poking me again?",
-            "Froedrick!",
-            "I've got no body, nobody's got me. Hachachacha.",
-        ]
-
+        self._peon_quotes = peon_quotes
         self.commands = commands
 
     schema = {

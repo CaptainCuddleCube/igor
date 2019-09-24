@@ -31,3 +31,5 @@ get-instances, reboot, start, state, stop.
   - This will stop an instance by providing its name
   - You can force the stopping of an instance using force
   - You can test this with dry-run
+
+## Lambda function and AWS API gateway

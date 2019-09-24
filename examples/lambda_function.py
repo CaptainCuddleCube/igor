@@ -1,8 +1,7 @@
 import json
-from typing import List, Dict
-from app.igor import Igor
-from plugins.contrib.aws import InstanceControl
-from auth.environment_auth import Auth
+from igor import Igor
+from igor.plugins.contrib.aws import InstanceControl
+from igor.auth.environment_auth import Auth
 
 commands = {
     "list-instances": {
@@ -53,29 +52,29 @@ if __name__ == "__main__":
     }
     print(lambda_handler(event, {}))
 
-    event = {
-        "token": "test-token",
-        "command": "/igor",
-        "text": "list-instances",
-        "user_name": "test-user",
-        "channel_id": "ABCDE33",
-    }
-    print(lambda_handler(event, {}))
+    # event = {
+    #     "token": "test-token",
+    #     "command": "/igor",
+    #     "text": "list-instances",
+    #     "user_name": "test-user",
+    #     "channel_id": "ABCDE33",
+    # }
+    # print(lambda_handler(event, {}))
 
-    event = {
-        "token": "test-token",
-        "command": "/igor",
-        "text": "status Test-instance",
-        "user_name": "test-user",
-        "channel_id": "ABCDE33",
-    }
-    print(lambda_handler(event, {}))
+    # event = {
+    #     "token": "test-token",
+    #     "command": "/igor",
+    #     "text": "status Test-instance",
+    #     "user_name": "test-user",
+    #     "channel_id": "ABCDE33",
+    # }
+    # print(lambda_handler(event, {}))
 
-    event = {
-        "token": "test-token",
-        "command": "/igor",
-        "text": "status --instance_name Test-instance",
-        "user_name": "test-user",
-        "channel_id": "ABCDE33",
-    }
-    print(lambda_handler(event, {}))
+    # event = {
+    #     "token": "test-token",
+    #     "command": "/igor",
+    #     "text": "status --instance_name Test-instance",
+    #     "user_name": "test-user",
+    #     "channel_id": "ABCDE33",
+    # }
+    # print(lambda_handler(event, {}))

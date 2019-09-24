@@ -111,3 +111,4 @@ packages
 .vscode
 __pycache__
 .mypy_cache/
+igor.egg-info

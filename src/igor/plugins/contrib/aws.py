@@ -1,7 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
 
-from plugins.exceptions import PluginError
+from igor.plugins.exceptions import PluginError
 
 
 def error_handler(func):
