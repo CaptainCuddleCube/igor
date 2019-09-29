@@ -1,5 +1,6 @@
 import json
 from igor import Igor
+from igor import send_slack_message
 from igor.plugins.contrib.aws import InstanceControl
 from igor.auth.environment_auth import Auth
 
@@ -36,8 +37,14 @@ def lambda_handler(event, context):
         token = event["token"]
         auth = Auth(token)
         plugins = {"AwsInstanceControl": InstanceControl(channel)}
-        igor = Igor(channel, user, auth, plugins, commands)
-        return igor.do_this(message)
+        igor = Igor(plugins, commands)
+        response = igor.do_this(message)
+        if "public" in response:
+            send_slack_message(
+                auth.auth_token, user, channel, message, response["public"]
+            )
+        elif "private" in response:
+            return response["private"]
     else:
         return f"Command {event['command']} is unknown"
 

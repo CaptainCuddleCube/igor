@@ -6,12 +6,9 @@ from .defaults import peon_quotes
 
 
 class Igor:
-    def __init__(self, channel, user_name, auth, plugins, commands):
-        self._auth = auth
-        self.channel = channel
-        self.user = user_name
+    def __init__(self, plugins, commands, quotes=peon_quotes):
         self._plugins = {**plugins, **{"igor": self}}
-        self._peon_quotes = peon_quotes
+        self._peon_quotes = quotes
         self.commands = commands
 
     schema = {
@@ -136,16 +133,19 @@ class Igor:
         try:
             response = getattr(plugin, function)(*args, **kwargs)
             if self.commands[root_command]["slack-alert"]:
-                self.send_slack_message(message, response)
-                print(response)
-                return self._peon_quotes[int(uniform(0, len(self._peon_quotes)))]
+                return {
+                    "private": self._peon_quotes[
+                        int(uniform(0, len(self._peon_quotes)))
+                    ],
+                    "public": response,
+                }
             else:
-                return response
+                return {"private": response}
         except PluginError as e:
             plugin_name = self.commands[root_command]["plugin"]["name"]
-            return f"Error with plugin {plugin_name}: " + str(e)
+            return {"private": f"Error with plugin {plugin_name}: " + str(e)}
         except Exception as e:
-            return "Error: " + str(e)
+            return {"private": "Error: " + str(e)}
 
     def help(self):
         msg = "Igor is your friendly worker that helps control things for you!\n\n"
@@ -165,18 +165,6 @@ class Igor:
     def _get_plugin_schema(self, command):
         plugin = self._plugins[self.commands[command]["plugin"]["name"]]
         return plugin.schema[self.commands[command]["plugin"]["function"]]
-
-    def send_slack_message(self, user_message, command_response):
-        message = f"""{self.user} told igor to "{user_message}".\n{command_response}"""
-        data = dict(channel=self.channel, pretty=1, text=message)
-        data = self._auth.staple_oath_token(data)
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept": "application/json",
-        }
-        requests.post(
-            "https://slack.com/api/chat.postMessage", data=data, headers=headers
-        )
 
     def _parse_command(self, command: str) -> str:
         if command not in self.commands:
