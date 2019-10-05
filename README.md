@@ -46,14 +46,27 @@ This will be a guide to reveal how you can setup things on your side.
 
 ### AWS lambda setup
 
-You will need to create a .zip file that includes all the packages that you will require to have the code run.
-Your entrance script will be run from a function called lambda_function.py, and that will be executed.
+You can find `lambda_function.py` in directory `examples/`, which will show you how you can set up an igor lambda function.
+AWS lambda expects that the function being called will be a file called `lambda_function.py`, so ensure your solution has it's
+entry point there. Note that the example `lambda_function.py` expects certain Environment variables (`SLACK_TOKEN`, and `OAUTH_TOKEN`), as well as the data from API gateway to be structured in a particular why.
 
-You can find `lambda_function.py` in directory `examples/`, which will show you how you can set things up.
+AWS expects a `.zip` file with all dependencies and your code inside it, for the lambda function to execute, follow the steps
+below to prepare the environment:
+
+1. Create a new directory that will be zipped, ie: `mkdir -p /tmp/igor`, and go into it: `cd /tmp/igor`
+2. You need to install the packages to the current location: `pip install <where igor was cloned> ./`
+3. You can now add your `lambda_function.py` code, using `examples/lambda_function.py` for help/
+4. Assuming you have used the examples `lambda_function.py`, you can double check things are working by running:
+
+```sh
+SLACK_TOKEN=test-token OAUTH_TOKEN="test" python3 lambda_function.py
+```
+
+5. zip igor `zip -r ../myDeploymentPackage.zip .`
 
 ### API Gateway setup - for slack
 
 This assumes that you will be working on a slack bot. Since slack slash commands send information in the URL using url-encoding, you will need to have API gateway convert those into a dictionary srtucture that your application
 can understand.
 
-**NOTE**: When you are using API gateway, you need to re-deploy things if you want to make changes.
+**NOTE**: When you are using API gateway, you need to re-deploy the API when you want your changes to take effect.
